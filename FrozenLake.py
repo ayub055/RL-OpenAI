@@ -14,6 +14,8 @@ TOL = 10**(-6)
 convergence_track = []
 valueFunction_vector = np.zeros(env.observation_space.n)
 
+print(valueFunction_vector.size)
+
 # for i in range(N_ITER):
 #     random_action = env.action_space.sample()
 #     returnValue = env.step(random_action)
@@ -36,12 +38,16 @@ for iterations in range(N_ITER):
     
     for state in env.P:
         outerSum = 0
+        print("--" * 50)
+        print(f"State : {state}")
+        
         
         for action in env.P[state]:
             innerSum = 0
             
             for probabiltiy, nextState, reward, isTerminal in env.P[state][action]:
                 innerSum += probabiltiy * (reward + DISCOUNT * valueFunction_vector[nextState])
+                print(valueFunction_vector)
                 
             outerSum += 0.25 * innerSum
         
