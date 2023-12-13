@@ -2,14 +2,15 @@ import gym
 import d4rl
 import pandas as pd
 from typing import Tuple
-import fourier_1d_time
-import matplotlib.pyplot as plt 
+from model import FNO1d
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import matplotlib.pyplot as plt 
 import numpy as np
+
+
 
 class ArgStorage:
     def __init__(self, args: dict) -> None:
