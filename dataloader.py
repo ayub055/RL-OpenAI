@@ -67,11 +67,10 @@ class Data:
             batch_size: int
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         batch_idxs = np.random.choice(self.valid_indices, size=batch_size, replace=False)
-        # print(batch_idxs)
         batch_observations =\
             [self.observations[i-self.history_len:i] for i in batch_idxs]
             # [self.observations[i-self.history_len:i] for i in range(batch_idxs)]
-        batch_observations = np.array(batch_observations)
+        batch_observations = np.array(batch_observations).transpose(0, 2, 1)
         batch_next_observation = self.observations[batch_idxs]
         batch_rewards = self.rewards[batch_idxs-1]
         batch_actions = self.actions[batch_idxs-1]
@@ -80,22 +79,32 @@ class Data:
             batch_observations,
             batch_actions,
             batch_rewards,
-            batch_next_observation,
+            batch_next_observation[:, :, None],
         )
     
-    def get_data(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        return (
-            self.observations,
-            self.actions,
-            self.rewards,
-            self.next_observations,
-        )
+    # def get_data(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    #     return (
+    #         self.observations,
+    #         self.actions,
+    #         self.rewards,
+    #         self.next_observations,
+    #     )
     
+    # def extract_X_y(
+    #         self,
+    #         batch: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    # ) -> Tuple[np.ndarray, np.ndarray]:
+       
+    #     batch_observations, batch_actions, batch_rewards, batch_next_observation = batch
+    #     X = batch_observations[:, :, :-1] # Select the last observation in each sequence
+    #     y = batch_observations[:,:,-1:]
+    #     return X, y
     
-
 
 def main():
-    batch_size = 32  
+    batch_size = 32
+    hist_len = 5
+
     env = gym.make('halfcheetah-medium-v2')
     dataset = env.get_dataset()
     # print(dataset.keys())
@@ -108,30 +117,57 @@ def main():
     timeouts = dataset['timeouts']
     terminals = np.logical_or(terminals, timeouts)
     
-    data_loader = Data(observations, next_observations, rewards, actions, terminals, 5) 
-    # TODO: vaiable history length
 
-    train_observations, train_actions, train_rewards, train_next_observations = data_loader.get_data()
-    train_size = int(len(train_observations) * 0.8)
-
-    train_data = (
-        train_observations[:train_size],
-        train_actions[:train_size],
-        train_rewards[:train_size],
-        train_next_observations[:train_size]
+    # train_observations, train_actions, train_rewards, train_next_observations = data_loader.get_data()
+    split = int(len(rewards) * 0.8)
+    
+    train_data_loader = Data(
+        observations[:split],
+        next_observations[:split],
+        rewards[:split],
+        actions[:split],
+        terminals[:split],
+        hist_len
+    )
+    test_data_loader = Data(
+        observations[split:],
+        next_observations[split:],
+        rewards[split:],
+        actions[split:],
+        terminals[split:],
+        hist_len
     )
 
-    test_data = (
-        train_observations[train_size:],
-        train_actions[train_size:],
-        train_rewards[train_size:],
-        train_next_observations[train_size:]
-    )
+
+    # train_data = (
+    #     train_observations[:train_size],
+    #     train_actions[:train_size],
+    #     train_rewards[:train_size],
+    #     train_next_observations[:train_size]
+    # )
+
+    # test_data = (
+    #     train_observations[train_size:],
+    #     train_actions[train_size:],
+    #     train_rewards[train_size:],
+    #     train_next_observations[train_size:]
+    # )
+    
+    obs, _, _ , n_ob = train_data_loader.get_batch(batch_size)
+    print("X shape:", obs.shape)
+    print("y shape:", n_ob.shape)
+    # print("Example X:", X[0])
+    # print("Example y:", y[0])
+    
+    
+    # train_data = train_observations[:train_size],
+    # test_data = train_observations[train_size:],
 
     # print(train_data[0].shape)
+    
 
     
-    batch_observations, batch_actions, batch_rewards, batch_next_observations = data_loader.get_batch(batch_size)
+    # batch_observations, batch_actions, batch_rewards, batch_next_observations = data_loader.get_batch(batch_size)
     # print(batch_observations.shape)
     # print(batch_next_observations.shape)
     # print(batch_observations[0,0], batch_next_observations[0,0])
