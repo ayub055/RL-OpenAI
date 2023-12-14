@@ -70,7 +70,7 @@ class Data:
         batch_observations =\
             [self.observations[i-self.history_len:i] for i in batch_idxs]
             # [self.observations[i-self.history_len:i] for i in range(batch_idxs)]
-        batch_observations = np.array(batch_observations).transpose(0, 2, 1)
+        batch_observations = np.array(batch_observations)
         batch_next_observation = self.observations[batch_idxs]
         batch_rewards = self.rewards[batch_idxs-1]
         batch_actions = self.actions[batch_idxs-1]
