@@ -10,6 +10,8 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt 
 import numpy as np
 
+import wandb
+
 
 class ArgStorage:
     def __init__(self, args: dict) -> None:
@@ -74,11 +76,12 @@ class Data:
         batch_rewards = np.array(batch_rewards).reshape(-1, 1)
         batch_actions = np.array(batch_actions)
         
+        
         return ( # s, a, r, s'
-            batch_observations,
-            batch_actions,
-            batch_rewards,
-            batch_next_observation,
+            torch.from_numpy(batch_observations),
+            torch.from_numpy(batch_actions),
+            torch.from_numpy(batch_rewards),
+            torch.from_numpy(batch_next_observation)
         )
     
     def add_trajectory(
@@ -152,6 +155,7 @@ class ConvBlock(nn.Module):
         a = self.ac_encoder(a).reshape(-1, channels_, dim_) # 32 x 20 x 17
         x = x + a
         x = self.bn(x) # 32 x 20 x 17
+        return x
 
 
 class FNO1d(nn.Module):
@@ -230,7 +234,7 @@ class FNO1d(nn.Module):
         return grid_x.to(device)
 
 
-def main():
+def main(args):
     batch_size = args.batch_size
     hist_len = args.history
     learning_rate = args.learning_rate
@@ -239,7 +243,14 @@ def main():
     modes = args.modes
     width = args.width
     device = args.device
+    print(f"using : {device}")
 
+    # Generate experiment name based on learning rate and loss function
+    experiment_name = f"FNO-halfcheetah-medium-v2_lr{args.learning_rate}_loss{args.loss}"
+
+    wandb.init(project="mbrl-nfo", name=experiment_name)
+    wandb.config.update(args)
+    
     env = gym.make('halfcheetah-medium-v2')
     dataset = env.get_dataset()
     # print(dataset.keys())
@@ -251,7 +262,8 @@ def main():
     terminals = dataset['terminals']
     timeouts = dataset['timeouts']
     terminals = np.logical_or(terminals, timeouts)
-    
+    # print(observations.shape[1])
+    # print(actions.shape[1])
 
     # train_observations, train_actions, train_rewards, train_next_observations = data_loader.get_data()
     split = int(len(rewards) * 0.8)
@@ -274,19 +286,6 @@ def main():
         hist_len
     )
 
-    # train_data = (
-    #     train_observations[:train_size],
-    #     train_actions[:train_size],
-    #     train_rewards[:train_size],
-    #     train_next_observations[:train_size]
-    # )
-
-    # test_data = (
-    #     train_observations[train_size:],
-    #     train_actions[train_size:],
-    #     train_rewards[train_size:],
-    #     train_next_observations[train_size:]
-    # )
     
     obs, ac, rew , n_ob = train_data_loader.get_batch(batch_size)
     print("X shape:", obs.shape)
@@ -295,10 +294,66 @@ def main():
     
     # TODO:
     # 1. make the model object
+    model = FNO1d(modes=modes,
+                  width=width,
+                  history=hist_len,
+                  state_dim=observations.shape[1],
+                  ac_dim=actions.shape[1]
+                  )
+    # Check if model correctly works
+    # obs_tensor = torch.from_numpy(obs).to(device)
+    # ac_tensor = torch.from_numpy(ac).to(device)
+    # n_obs_tensor = torch.from_numpy(n_ob).to(device)
+    y_hat = model(obs, ac)
+    print(y_hat.shape)
+    loss = F.smooth_l1_loss(y_hat, n_ob)
+    print(loss)
+    
     # 2. make the optimizer object (Test with Adam lr={1e-5, 3e-5, 1e-4, 3e-4, 1e-3}})
+    optimizer = optim.Adam(model.parameters(),
+                           lr=learning_rate,
+                           weight_decay=weight_decay
+                           )
     # 3. make the loss function object (Test with MSE and SmoothL1Loss)
+    if args.loss == 'MSE':
+        loss_fn = nn.MSELoss()
+    elif args.loss == 'SmoothL1':
+        loss_fn = nn.SmoothL1Loss()
+    else:
+        raise ValueError("Invalid loss function. Use 'MSE' or 'SmoothL1'.")
+
+    
     # 4. make the training loop
-    # 5. make the evaluation loop
+    model.to(device)
+    model.train()
+    
+    hist = np.inf
+    for i in range(n_iters):
+        X, ac, _, y = train_data_loader.get_batch(batch_size)
+        X, y = X.to(device), y.to(device)
+        y_hat = model(X, ac)
+        
+        loss = loss_fn(y_hat, y)
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        if i % 100 == 0:
+            with torch.no_grad():
+                test_X, test_ac, _, test_y = test_data_loader.get_batch(batch_size)
+                test_X, test_y = test_X.to(device), test_y.to(device)
+                test_y_hat = model(test_X, test_ac)
+                val_loss = loss_fn(test_y_hat, test_y)
+                print(i, ", Train Error:", loss.item(), ", Test Error:", val_loss.item())
+                wandb.log({"Training Loss": loss.item()})
+                
+                if val_loss.item() < hist:
+                    torch.save(model.state_dict(), 'model.pth')
+                    hist = val_loss.item()
+        model.train()
+        
+ 
     # 6. make the plotting function (using WandB)
     
     # Additional TODOs (to be done later):
@@ -307,19 +362,34 @@ def main():
     # 3. need to determine whether state normalization is required
     # 4. need to determine whether batch norm is required
 
-
+import argparse
 if __name__ == '__main__':
-    args = ArgStorage({
-        'learning_rate' : 1e-4,
-        'weight_decay' : 1e-5,
-        'n_iters' : 1000,
-        'history' : 5,
-        'batch_size' : 1024,
-        'modes' : 9,
-        'width' : 64,
-        'seed' : 2023,
-        'gpu_id' : 0,
-    })
+    # args = ArgStorage({
+    #     'learning_rate' : 1e-4,
+    #     'weight_decay' : 1e-5,
+    #     'n_iters' : 1000,
+    #     'history' : 5,
+    #     'batch_size' : 1024,
+    #     'modes' : 9,
+    #     'width' : 64,
+    #     'seed' : 2023,
+    #     'gpu_id' : 0,
+    # })
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--learning_rate', type=float, default=1e-4)
+    parser.add_argument('--weight_decay', type=float, default=1e-5)
+    parser.add_argument('--n_iters', type=int, default=1000)
+    parser.add_argument('--history', type=int, default=5)
+    parser.add_argument('--batch_size', type=int, default=1024)
+    parser.add_argument('--modes', type=int, default=9)
+    parser.add_argument('--width', type=int, default=64)
+    parser.add_argument('--seed', type=int, default=2023)
+    parser.add_argument('--gpu_id', type=int, default=0)
+    parser.add_argument('--loss', choices=['MSE', 'SmoothL1'], default='MSE')
+
+    args = parser.parse_args()
+
     
     args.device = torch.device(
         f'cuda:{args.gpu_id}' if torch.cuda.is_available() else 'cpu')
