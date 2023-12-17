@@ -66,9 +66,13 @@ class Data:
     def get_batch(
             self,
             batch_size: int,
-            device
+            device: torch.device,
+            idxs: List[int] = None
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        batch_idxs = np.random.choice(self.valid_indices, size=batch_size, replace=False)
+        if idxs is None:
+            batch_idxs = np.random.choice(self.valid_indices, size=batch_size, replace=False)
+        else:
+            batch_idxs = np.array(idxs)
         batch_observations =\
             [[self.observations[idx-self.history_len+i] for i in range(self.history_len)] for idx in batch_idxs]
         batch_next_observation = [self.observations[idx] for idx in batch_idxs]
@@ -109,136 +113,58 @@ class Data:
         for trajectory in trajectories:
             self.add_trajectory(trajectory)
 
+############################################################            
+#################### BaseLine ##############################
+############################################################
 
-class SpectralConv1d_fast(nn.Module):
-    def __init__(self, in_channels, out_channels, modes):
-        super(SpectralConv1d_fast, self).__init__()
+class Baseline1(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim):
+        super(Baseline1, self).__init__()
+        self.fc1 = nn.Linear(state_dim + action_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, state_dim)
 
-        """
-        1D Fourier layer. It does FFT, linear transform, and Inverse FFT.    
-        """
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.modes = modes #Number of Fourier modes to multiply, at most floor(N/2) + 1
-
-        self.scale = (1 / (in_channels * out_channels))
-        self.weights1 = nn.Parameter(self.scale * torch.rand(in_channels, out_channels, self.modes, dtype=torch.cfloat))
-
-    # Complex multiplication
-    def compl_mul1d(self, input, weights):
-        # (batch, in_channel, x ), (in_channel, out_channel, x) -> (batch, out_channel, x)
-        return torch.einsum("bix,iox->box", input, weights)
-
-    def forward(self, x):
-        batchsize = x.shape[0]
-        #Compute Fourier coeffcients up to factor of e^(- something constant)
-        x_ft = torch.fft.rfft(x)
-
-        # Multiply relevant Fourier modes
-        out_ft = torch.zeros(batchsize, self.out_channels, x.size(-1)//2 + 1, dtype=torch.cfloat, device=x.device)
-        out_ft[:, :, :self.modes] =\
-            self.compl_mul1d(x_ft[:, :, :self.modes], self.weights1)
-
-        #Return to physical space
-        x = torch.fft.irfft(out_ft, n=x.size(-1))
+    def forward(self, state, action):
+        x = torch.cat((state, action), dim=1)  # Concatenate state and action along the last dimension
+        x = torch.relu(self.fc1(x)) 
+        x = self.fc2(x)        
+        x = x.unsqueeze(-1) #([1024, 17, 1])
         return x
-
-
-class ConvBlock(nn.Module):
-    def __init__(self, conv_channels, state_dim, ac_dim):
-        super(ConvBlock, self).__init__()
-        self.conv = nn.Conv1d(conv_channels, conv_channels, 1)
-        self.bn = torch.nn.BatchNorm1d(conv_channels)  # TODO: check is this is even required
-        self.ac_dim = ac_dim
-        self.ac_encoder = nn.Linear(ac_dim, conv_channels * state_dim)  # TODO: make it general (state dim independent)
     
-    def forward(self, x, a):
-        _, channels_, dim_ = x.shape
-        x = self.conv(x) # 32 x 20 x 17
-        a = self.ac_encoder(a).reshape(-1, channels_, dim_) # 32 x 20 x 17
-        x = x + a
-        x = self.bn(x) # 32 x 20 x 17
-        return x
 
+# class Baseline2(nn.Module):
+#     def __init__(self, delta_predictor):
+#         super(Baseline2, self).__init__()
+#         self.delta_predictor = delta_predictor
 
-class FNO1d(nn.Module):
-    def __init__(self, modes, width, history, state_dim, ac_dim, device):
-        super(FNO1d, self).__init__()
+#     def forward(self, state, action):
+#         # Get the predicted delta
+#         state, delta_pred = self.delta_predictor(state, action)
 
-        """
-        The overall network. It contains 4 layers of the Fourier layer.
-        1. Lift the input to the desire channel dimension by self.fc0 .
-        2. 4 layers of the integral operators u' = (W + K)(u).
-            W defined by self.w; K defined by self.conv .
-        3. Project from the channel space to the output space by self.fc1 and self.fc2 .
-        
-        input: the solution of the previous 10 timesteps + 1 location (u(t-10, x), ..., u(t-1, x),  x)
-        input shape: (batchsize, x=64, c=11)
-        output: the solution of the next timestep
-        output shape: (batchsize, x=64, c=1)
-        """
+#         # Compute the next predicted state
+#         next_state = state + delta_pred
 
-        self.modes = modes
-        self.width = width
-        self.history = history
-        self.padding = 2 # pad the domain if input is non-periodic
-        self.fc0 = nn.Linear(self.history + 1, self.width)
-        self.device = device
-        # input channel is 12: the solution of the previous 10 timesteps + 2 locations (u(t-10, x, y), ..., u(t-1, x, y),  x, y)
-
-        self.conv0 = SpectralConv1d_fast(self.width, self.width, self.modes)
-        self.conv1 = SpectralConv1d_fast(self.width, self.width, self.modes)
-        self.conv2 = SpectralConv1d_fast(self.width, self.width, self.modes)
-        self.conv3 = SpectralConv1d_fast(self.width, self.width, self.modes)
-        self.w0 = ConvBlock(width, state_dim, ac_dim)
-        self.w1 = ConvBlock(width, state_dim, ac_dim)
-        self.w2 = ConvBlock(width, state_dim, ac_dim)
-        self.w3 = ConvBlock(width, state_dim, ac_dim)
-
-        self.fc1 = nn.Linear(self.width, 128)
-        self.fc2 = nn.Linear(128, 1)
-
-    def forward(self, x, a): # x is state, a is action
-        grid = self.get_grid(x.shape, x.device)
-        # x = x.to(self.device)
-        # a = a.to(self.device)
-        x = torch.cat((x, grid), dim=-1)  # 32 x 17 x (10+1)
-        x = self.fc0(x)  # 32 x 17 x 20
-        x = x.permute(0, 2, 1)  # 32 x 20 x 17
-        # x = F.pad(x, [0,self.padding, 0,self.padding]) # pad the domain if input is non-periodic
-
-        x1 = self.conv0(x)  # 32 x 20 x 17
-        x2 = self.w0(x, a)  # 32 x 20 x 17
-        x = x1 + x2
-        x = F.gelu(x)  # 32 x 20 x 17
-
-        x1 = self.conv1(x)
-        x2 = self.w1(x, a)
-        x = x1 + x2
-        x = F.gelu(x)
-
-        x1 = self.conv2(x)
-        x2 = self.w2(x, a)
-        x = x1 + x2
-        x = F.gelu(x)
-
-        x1 = self.conv3(x)
-        x2 = self.w3(x, a)
-        x = x1 + x2
-
-        # x = x[..., :-self.padding, :-self.padding] # pad the domain if input is non-periodic
-        x = x.permute(0, 2, 1)
-        x = self.fc1(x)
-        x = F.gelu(x)
-        x = self.fc2(x)
-        return x.to(self.device)
-
-    def get_grid(self, shape, device):
-        batch_size, size_x = shape[0], shape[1]
-        grid_x = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float, device=device)
-        grid_x = grid_x.reshape(1, size_x, 1).repeat([batch_size, 1, 1])
-        return grid_x
+#         return next_state, delta_pred
+    
+    
+    
+# class DeltaPredictor(nn.Module):
+#     def __init__(self, state_dim, action_dim, hidden_dim):
+#         super(DeltaPredictor, self).__init__()
+#         self.fc1 = nn.Linear(state_dim + action_dim, hidden_dim)
+#         self.fc2 = nn.Linear(hidden_dim, state_dim)
+    
+#     def forward(self, state, action):
+#         # state_t, state_t_1 = state[:, :, -1], state[:, :, -2]
+#         # change_in_state = state_t - state_t_1   #ground truth
+#         state_t = state[:, :, -1]
+#         input = torch.cat((state_t, action), dim=1)
+#         delta_pred = self.fc2(torch.relu(self.fc1(input)))
+#         # print(delta_pred.shape)
+#         # print(state_t.shape)
+#         # next_state = state_t + delta_pred
+#         # next_state = next_state.unsqueeze(-1)
+#         # print(next_state.shape)
+#         return state_t, delta_pred # should return this too, delta_pred
 
 
 def main(args):
@@ -250,13 +176,15 @@ def main(args):
     modes = args.modes
     width = args.width
     device = args.device
+    model = args.model
     print(f"using : {device}")
 
     # Generate experiment name based on learning rate and loss function
-    experiment_name = f"FNO-halfcheetah-medium-v2_lr{args.learning_rate}_loss{args.loss}"
+    # experiment_name = f"FNO-halfcheetah-medium-v2_lr{args.learning_rate}_loss{args.loss}"
+    # experiment_name = f"Baseline-halfcheetah-medium-v2_model_{args.model}_{args.loss}"
 
-    wandb.init(project="mbrl-nfo", name=experiment_name)
-    wandb.config.update(args)
+    # wandb.init(project="mbrl-nfo", name=experiment_name)
+    # wandb.config.update(args)
     
     env = gym.make('halfcheetah-medium-v2')
     dataset = env.get_dataset()
@@ -269,8 +197,12 @@ def main(args):
     terminals = dataset['terminals']
     timeouts = dataset['timeouts']
     terminals = np.logical_or(terminals, timeouts)
-    # print(observations.shape[1])
+    print(observations.shape)
     # print(actions.shape[1])
+    
+    # obs_mu, obs_std = np.mean(observations), np.std(observations)
+    # observations = (observations - obs_mu) / obs_std
+    # next_observations = (next_observations - obs_mu) / obs_std
 
     # train_observations, train_actions, train_rewards, train_next_observations = data_loader.get_data()
     split = int(len(rewards) * 0.8)
@@ -301,26 +233,43 @@ def main(args):
     print("y shape:", n_ob.shape)
     print("a shape:", ac.shape)
     
-    # TODO:
-    # 1. make the model object
-    model = FNO1d(
-        modes=modes,
-        width=width,
-        history=hist_len,
-        state_dim=observations.shape[1],
-        ac_dim=actions.shape[1],
-        device=device
-    )
-    # Check if model correctly works
-    # obs_tensor = torch.from_numpy(obs).to(device)
-    # ac_tensor = torch.from_numpy(ac).to(device)
-    # n_obs_tensor = torch.from_numpy(n_ob).to(device)
-    # y_hat = model(obs, ac)
-    # print(y_hat.shape)
-    # loss = F.smooth_l1_loss(y_hat, n_ob)
-    # print(loss)
+    # print(obs[0,:,:])
+    # print(n_ob[0,:,:])
     
-    # 2. make the optimizer object (Test with Adam lr={1e-5, 3e-5, 1e-4, 3e-4, 1e-3}})
+    
+    if args.model == 'baseline':
+        model = Baseline1(
+            state_dim=observations.shape[1],
+            action_dim=actions.shape[1],
+            hidden_dim=512
+        ).to(device)
+        
+    elif args.model == 'FNO1d':
+            model = FNO1d(
+            modes=modes,
+            width=width,
+            history=hist_len,
+            state_dim=observations.shape[1],
+            ac_dim=actions.shape[1],
+            device=device
+        )
+    elif args.model == 'dynamic':
+        model = Baseline1(
+            state_dim=observations.shape[1],
+            action_dim=actions.shape[1],
+            hidden_dim=512
+        ).to(device)
+        # state, n_state = obs[:, :, -1], y
+        # change_in_state = n_state - state   #ground truth
+        
+        # pred_change_in_state = model(state, ac)
+        # loss = F.smooth_l1_loss(delta_pred, change_in_state)
+        # print(loss)
+    else:
+        raise ValueError("Invalid model. Use 'baseline' or 'FNO1d'.")
+ 
+    # import sys; sys.exit()
+    # import sys;sys.exit()
     optimizer = optim.Adam(
         model.parameters(),
         lr=learning_rate,
@@ -340,12 +289,17 @@ def main(args):
     model.train()
     
     hist = np.inf
-    for i in range(n_iters):
+    for i in range(n_iters + 1):
         X, ac, _, y = train_data_loader.get_batch(batch_size, device)
         X, y = X.to(device), y.to(device)
-        y_hat = model(X, ac)
+        # y_hat = model(X, ac)
+        state, n_state = X[:, :, -1], y.squeeze()
+        change_in_state = n_state - state   #ground truth
         
-        loss = loss_fn(y_hat, y)
+        pred_change_in_state = model(state, ac).squeeze()
+        loss = F.smooth_l1_loss(pred_change_in_state, change_in_state)
+
+        # loss = loss_fn(y_hat, y)
         
         optimizer.zero_grad()
         loss.backward()
@@ -355,15 +309,26 @@ def main(args):
             with torch.no_grad():
                 test_X, test_ac, _, test_y = test_data_loader.get_batch(batch_size, device)
                 test_X, test_y = test_X.to(device), test_y.to(device)
-                test_y_hat = model(test_X, test_ac)
-                val_loss = loss_fn(test_y_hat, test_y)
+                # test_y_hat = model(test_X, test_ac)
+                
+                #####Specific for dynamic model #######
+                ########################################
+                state, n_state = test_X[:, :, -1], test_y.squeeze()
+                change_in_state = n_state - state   #ground truth
+                
+                pred_change_in_state = model(state, test_ac).squeeze()
+                val_loss = F.smooth_l1_loss(pred_change_in_state, change_in_state)
+                ########################################
+                ########################################
+                # val_loss = loss_fn(test_y_hat, test_y)
+                
                 print(i, ", Train Error:", loss.item(), ", Test Error:", val_loss.item())
-                wandb.log({"Training Loss": loss.item()})
+                # wandb.log({"Training Loss": loss.item()})
                 
                 if val_loss.item() < hist:
-                    model_filename = f'model_{experiment_name}.pth'
-                    torch.save(model.state_dict(), model_filename)
-                    # torch.save(model.state_dict(), 'model.pth')
+                    # model_filename = f'model_{experiment_name}.pth'
+                    # torch.save(model.state_dict(), model_filename)
+                    torch.save(model.state_dict(), 'model.pth')
                     hist = val_loss.item()
         model.train()
         
@@ -394,16 +359,17 @@ if __name__ == '__main__':
     # })
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--learning_rate', type=float, default=1e-4)
+    parser.add_argument('--learning_rate', type=float, default=1e-4) # TODO: what is the best learning rate
     parser.add_argument('--weight_decay', type=float, default=1e-5)
-    parser.add_argument('--n_iters', type=int, default=1000)
+    parser.add_argument('--n_iters', type=int, default=1000) # TODO: where to stop
     parser.add_argument('--history', type=int, default=5)
-    parser.add_argument('--batch_size', type=int, default=1024)
+    parser.add_argument('--batch_size', type=int, default=4096)
     parser.add_argument('--modes', type=int, default=9)
     parser.add_argument('--width', type=int, default=64)
     parser.add_argument('--seed', type=int, default=2023)
     parser.add_argument('--gpu_id', type=int, default=0)
-    parser.add_argument('--loss', choices=['MSE', 'SmoothL1'], default='MSE')
+    parser.add_argument('--loss', choices=['MSE', 'SmoothL1'], default='SmoothL1')
+    parser.add_argument('--model', choices=['baseline', 'FNO1d', 'dynamic'])
 
     args = parser.parse_args()
 
