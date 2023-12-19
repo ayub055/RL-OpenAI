@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 import wandb
-
+from utils import compare_trajectory, count_parameters
 
 
 class ArgStorage:
@@ -66,9 +66,13 @@ class Data:
     def get_batch(
             self,
             batch_size: int,
-            device
+            device: torch.device,
+            idxs: List[int] = None
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        batch_idxs = np.random.choice(self.valid_indices, size=batch_size, replace=False)
+        if idxs is None:
+            batch_idxs = np.random.choice(self.valid_indices, size=batch_size, replace=False)
+        else:
+            batch_idxs = np.array(idxs)
         batch_observations =\
             [[self.observations[idx-self.history_len+i] for i in range(self.history_len)] for idx in batch_idxs]
         batch_next_observation = [self.observations[idx] for idx in batch_idxs]
@@ -146,24 +150,27 @@ class SpectralConv1d_fast(nn.Module):
 
 
 class ConvBlock(nn.Module):
-    def __init__(self, conv_channels, state_dim, ac_dim):
+    # def __init__(self, conv_channels, state_dim, ac_dim):
+    def __init__(self, conv_channels, ac_dim):
         super(ConvBlock, self).__init__()
         self.conv = nn.Conv1d(conv_channels, conv_channels, 1)
-        self.bn = torch.nn.BatchNorm1d(conv_channels)  # TODO: check is this is even required
+        # self.bn = torch.nn.BatchNorm1d(conv_channels)  # TODO: check is this is even required
         self.ac_dim = ac_dim
-        self.ac_encoder = nn.Linear(ac_dim, conv_channels * state_dim)  # TODO: make it general (state dim independent)
+        # self.ac_encoder = nn.Linear(ac_dim, conv_channels * state_dim)  # TODO: make it general (state dim independent)
+        self.ac_encoder = nn.Linear(ac_dim, conv_channels)
     
     def forward(self, x, a):
-        _, channels_, dim_ = x.shape
+        _, channels_, _ = x.shape
         x = self.conv(x) # 32 x 20 x 17
-        a = self.ac_encoder(a).reshape(-1, channels_, dim_) # 32 x 20 x 17
+        a = self.ac_encoder(a).reshape(-1, channels_, 1) # 32 x 20 x 1
         x = x + a
-        x = self.bn(x) # 32 x 20 x 17
+        # x = self.bn(x) # 32 x 20 x 17
         return x
 
 
 class FNO1d(nn.Module):
-    def __init__(self, modes, width, history, state_dim, ac_dim, device):
+    # def __init__(self, modes, width, history, state_dim, ac_dim, device):
+    def __init__(self, modes, width, history, ac_dim, device):
         super(FNO1d, self).__init__()
 
         """
@@ -191,20 +198,29 @@ class FNO1d(nn.Module):
         self.conv1 = SpectralConv1d_fast(self.width, self.width, self.modes)
         self.conv2 = SpectralConv1d_fast(self.width, self.width, self.modes)
         self.conv3 = SpectralConv1d_fast(self.width, self.width, self.modes)
-        self.w0 = ConvBlock(width, state_dim, ac_dim)
-        self.w1 = ConvBlock(width, state_dim, ac_dim)
-        self.w2 = ConvBlock(width, state_dim, ac_dim)
-        self.w3 = ConvBlock(width, state_dim, ac_dim)
+        # self.w0 = ConvBlock(width, state_dim, ac_dim)
+        # self.w1 = ConvBlock(width, state_dim, ac_dim)
+        # self.w2 = ConvBlock(width, state_dim, ac_dim)
+        # self.w3 = ConvBlock(width, state_dim, ac_dim)
+        self.w0 = ConvBlock(width, ac_dim)
+        self.w1 = ConvBlock(width, ac_dim)
+        self.w2 = ConvBlock(width, ac_dim)
+        self.w3 = ConvBlock(width, ac_dim)
 
         self.fc1 = nn.Linear(self.width, 128)
+        # self.bn1 = nn.BatchNorm1d(128)
         self.fc2 = nn.Linear(128, 1)
 
     def forward(self, x, a): # x is state, a is action
         grid = self.get_grid(x.shape, x.device)
+        
         # x = x.to(self.device)
         # a = a.to(self.device)
         x = torch.cat((x, grid), dim=-1)  # 32 x 17 x (10+1)
+        # print(x.shape)
         x = self.fc0(x)  # 32 x 17 x 20
+        # print(x.shape)
+        
         x = x.permute(0, 2, 1)  # 32 x 20 x 17
         # x = F.pad(x, [0,self.padding, 0,self.padding]) # pad the domain if input is non-periodic
 
@@ -231,6 +247,7 @@ class FNO1d(nn.Module):
         x = x.permute(0, 2, 1)
         x = self.fc1(x)
         x = F.gelu(x)
+        # self.bn1 = nn.BatchNorm1d(128)
         x = self.fc2(x)
         return x.to(self.device)
 
@@ -239,7 +256,6 @@ class FNO1d(nn.Module):
         grid_x = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float, device=device)
         grid_x = grid_x.reshape(1, size_x, 1).repeat([batch_size, 1, 1])
         return grid_x
-
 
 def main(args):
     batch_size = args.batch_size
@@ -251,16 +267,25 @@ def main(args):
     width = args.width
     device = args.device
     print(f"using : {device}")
+    
+    # model = FNO1d(
+    #     modes=modes,
+    #     width=width,
+    #     history=hist_len,
+    #     ac_dim=6,
+    #     device=device
+    # )
+    # count_parameters(model)
+    # import sys; sys.exit()
 
     # Generate experiment name based on learning rate and loss function
-    experiment_name = f"FNO-halfcheetah-medium-v2_lr{args.learning_rate}_loss{args.loss}"
-
-    wandb.init(project="mbrl-nfo", name=experiment_name)
+    
+    experiment_name = f"FNO-halfcheetah_lr_{args.learning_rate}_width_{args.width}_NOBN_NO_STATE_modes_{args.modes}"
+    wandb.init(project="mbrl-nfo", group ="State-INDEPENDENT-No-BN", name=experiment_name)
     wandb.config.update(args)
     
     env = gym.make('halfcheetah-medium-v2')
     dataset = env.get_dataset()
-    # print(dataset.keys())
     
     observations = dataset['observations']
     actions = dataset['actions']
@@ -269,8 +294,6 @@ def main(args):
     terminals = dataset['terminals']
     timeouts = dataset['timeouts']
     terminals = np.logical_or(terminals, timeouts)
-    # print(observations.shape[1])
-    # print(actions.shape[1])
 
     # train_observations, train_actions, train_rewards, train_next_observations = data_loader.get_data()
     split = int(len(rewards) * 0.8)
@@ -301,24 +324,31 @@ def main(args):
     print("y shape:", n_ob.shape)
     print("a shape:", ac.shape)
     
+    
+    # print(obs[0,:,:])
+    # print(n_ob[0,:,:])
+    
+    
+    # print(obs[1,:,:])
+    # print(n_ob[1,:,:])
+    # print(n_ob)
+    # print(obs[1,:,:])
+    # print(n_ob[0,:,:])
+    
+    # print(n_ob[0,:,:])
+    
+    
+    # import sys; sys.exit()
     # TODO:
     # 1. make the model object
     model = FNO1d(
         modes=modes,
         width=width,
         history=hist_len,
-        state_dim=observations.shape[1],
+        # state_dim=observations.shape[1],
         ac_dim=actions.shape[1],
         device=device
     )
-    # Check if model correctly works
-    # obs_tensor = torch.from_numpy(obs).to(device)
-    # ac_tensor = torch.from_numpy(ac).to(device)
-    # n_obs_tensor = torch.from_numpy(n_ob).to(device)
-    # y_hat = model(obs, ac)
-    # print(y_hat.shape)
-    # loss = F.smooth_l1_loss(y_hat, n_ob)
-    # print(loss)
     
     # 2. make the optimizer object (Test with Adam lr={1e-5, 3e-5, 1e-4, 3e-4, 1e-3}})
     optimizer = optim.Adam(
@@ -326,7 +356,7 @@ def main(args):
         lr=learning_rate,
         weight_decay=weight_decay
     )
-    # 3. make the loss function object (Test with MSE and SmoothL1Loss)
+    
     if args.loss == 'MSE':
         loss_fn = nn.MSELoss()
     elif args.loss == 'SmoothL1':
@@ -334,9 +364,11 @@ def main(args):
     else:
         raise ValueError("Invalid loss function. Use 'MSE' or 'SmoothL1'.")
 
-    
     # 4. make the training loop
     model.to(device)
+    count_parameters(model)
+    
+    # import sys;sys.exit()
     model.train()
     
     hist = np.inf
@@ -358,18 +390,20 @@ def main(args):
                 test_y_hat = model(test_X, test_ac)
                 val_loss = loss_fn(test_y_hat, test_y)
                 print(i, ", Train Error:", loss.item(), ", Test Error:", val_loss.item())
-                wandb.log({"Training Loss": loss.item()})
+                # wandb.log({"Training Loss": loss.item()})
+                wandb.log({"Train error": loss.item(), "Test error":val_loss.item()})
                 
                 if val_loss.item() < hist:
                     model_filename = f'model_{experiment_name}.pth'
                     torch.save(model.state_dict(), model_filename)
-                    # torch.save(model.state_dict(), 'model.pth')
+                    # torch.save(model.state_dict(), 'model_check.pth')
                     hist = val_loss.item()
+                    
         model.train()
-        
- 
-    # 6. make the plotting function (using WandB)
-    
+    # model.load_state_dict(torch.load('model_check.pth'))
+    # mape = compare_trajectory(model, test_data_loader, device, batch_size)
+    # print("MAPE values for each time step:", mape.shape)
+       
     # Additional TODOs (to be done later):
     # 0. use a simple baseline (2 layer MLP with 512 hidden units) and compare the performance
     # 1. figure out a way to compare two models (by the quality of predicted trajectories)
@@ -381,29 +415,18 @@ def main(args):
 
 import argparse
 if __name__ == '__main__':
-    # args = ArgStorage({
-    #     'learning_rate' : 1e-4,
-    #     'weight_decay' : 1e-5,
-    #     'n_iters' : 1000,
-    #     'history' : 5,
-    #     'batch_size' : 1024,
-    #     'modes' : 9,
-    #     'width' : 64,
-    #     'seed' : 2023,
-    #     'gpu_id' : 0,
-    # })
-    
+
     parser = argparse.ArgumentParser()
-    parser.add_argument('--learning_rate', type=float, default=1e-4)
+    parser.add_argument('--learning_rate', type=float, default=0.001)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
-    parser.add_argument('--n_iters', type=int, default=1000)
+    parser.add_argument('--n_iters', type=int, default=20000)
     parser.add_argument('--history', type=int, default=5)
-    parser.add_argument('--batch_size', type=int, default=1024)
-    parser.add_argument('--modes', type=int, default=9)
-    parser.add_argument('--width', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=4096)
+    parser.add_argument('--modes', type=int, default=5)
+    parser.add_argument('--width', type=int, default=256)
     parser.add_argument('--seed', type=int, default=2023)
     parser.add_argument('--gpu_id', type=int, default=0)
-    parser.add_argument('--loss', choices=['MSE', 'SmoothL1'], default='MSE')
+    parser.add_argument('--loss', choices=['MSE', 'SmoothL1'], default='SmoothL1')
 
     args = parser.parse_args()
 
