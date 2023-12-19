@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 import wandb
-
+from utils import compare_trajectory, count_parameters
 
 
 class ArgStorage:
@@ -129,42 +129,25 @@ class Baseline1(nn.Module):
         x = self.fc2(x)        
         x = x.unsqueeze(-1) #([1024, 17, 1])
         return x
-    
 
-# class Baseline2(nn.Module):
-#     def __init__(self, delta_predictor):
-#         super(Baseline2, self).__init__()
-#         self.delta_predictor = delta_predictor
+class Baseline2(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim):
+        super(Baseline2, self).__init__()
+        self.fc1s = nn.Linear(state_dim, hidden_dim)
+        self.fc1a = nn.Linear(action_dim, hidden_dim) ## action dim --> hidden dim
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, state_dim)
 
-#     def forward(self, state, action):
-#         # Get the predicted delta
-#         state, delta_pred = self.delta_predictor(state, action)
+    def forward(self, state, action):
+        state_encoded = self.fc1s(state)
+        action_encoded = self.fc1a(action)
+        x = state_encoded + action_encoded
+        x = torch.relu(self.fc2(x)) 
+        x = self.fc3(x)        
+        x = x.unsqueeze(-1) #([1024, 17, 1])
+        return x
 
-#         # Compute the next predicted state
-#         next_state = state + delta_pred
-
-#         return next_state, delta_pred
-    
-    
-    
-# class DeltaPredictor(nn.Module):
-#     def __init__(self, state_dim, action_dim, hidden_dim):
-#         super(DeltaPredictor, self).__init__()
-#         self.fc1 = nn.Linear(state_dim + action_dim, hidden_dim)
-#         self.fc2 = nn.Linear(hidden_dim, state_dim)
-    
-#     def forward(self, state, action):
-#         # state_t, state_t_1 = state[:, :, -1], state[:, :, -2]
-#         # change_in_state = state_t - state_t_1   #ground truth
-#         state_t = state[:, :, -1]
-#         input = torch.cat((state_t, action), dim=1)
-#         delta_pred = self.fc2(torch.relu(self.fc1(input)))
-#         # print(delta_pred.shape)
-#         # print(state_t.shape)
-#         # next_state = state_t + delta_pred
-#         # next_state = next_state.unsqueeze(-1)
-#         # print(next_state.shape)
-#         return state_t, delta_pred # should return this too, delta_pred
+ 
 
 
 def main(args):
@@ -178,13 +161,23 @@ def main(args):
     device = args.device
     model = args.model
     print(f"using : {device}")
+    
+    
+    # model = Baseline2(
+    #     state_dim=17,
+    #     action_dim=6,
+    #     hidden_dim=512
+    # )
+    # count_parameters(model)
+    # import sys; sys.exit()
+
 
     # Generate experiment name based on learning rate and loss function
     # experiment_name = f"FNO-halfcheetah-medium-v2_lr{args.learning_rate}_loss{args.loss}"
     # experiment_name = f"Baseline-halfcheetah-medium-v2_model_{args.model}_{args.loss}"
-
-    # wandb.init(project="mbrl-nfo", name=experiment_name)
-    # wandb.config.update(args)
+    experiment_name = f"Delta-halfcheetah_lr_{args.learning_rate}_hidden_{args.width}"
+    wandb.init(project="mbrl-nfo", group="Delta_Baseline2", name=experiment_name)
+    wandb.config.update(args)
     
     env = gym.make('halfcheetah-medium-v2')
     dataset = env.get_dataset()
@@ -254,10 +247,10 @@ def main(args):
             device=device
         )
     elif args.model == 'dynamic':
-        model = Baseline1(
+        model = Baseline2(
             state_dim=observations.shape[1],
             action_dim=actions.shape[1],
-            hidden_dim=512
+            hidden_dim=width
         ).to(device)
         # state, n_state = obs[:, :, -1], y
         # change_in_state = n_state - state   #ground truth
@@ -272,8 +265,8 @@ def main(args):
     # import sys;sys.exit()
     optimizer = optim.Adam(
         model.parameters(),
-        lr=learning_rate,
-        weight_decay=weight_decay
+        lr=learning_rate
+        # weight_decay=weight_decay
     )
     # 3. make the loss function object (Test with MSE and SmoothL1Loss)
     if args.loss == 'MSE':
@@ -297,7 +290,8 @@ def main(args):
         change_in_state = n_state - state   #ground truth
         
         pred_change_in_state = model(state, ac).squeeze()
-        loss = F.smooth_l1_loss(pred_change_in_state, change_in_state)
+        # print(pred_change_in_state.shape, )
+        loss = loss_fn(pred_change_in_state, change_in_state)
 
         # loss = loss_fn(y_hat, y)
         
@@ -317,26 +311,25 @@ def main(args):
                 change_in_state = n_state - state   #ground truth
                 
                 pred_change_in_state = model(state, test_ac).squeeze()
-                val_loss = F.smooth_l1_loss(pred_change_in_state, change_in_state)
+                val_loss = loss_fn(pred_change_in_state, change_in_state)
                 ########################################
                 ########################################
                 # val_loss = loss_fn(test_y_hat, test_y)
                 
                 print(i, ", Train Error:", loss.item(), ", Test Error:", val_loss.item())
-                # wandb.log({"Training Loss": loss.item()})
+                # wandb.log({"Training Loss": loss.item(), "Test Loss": val_loss.item()})
+                wandb.log({"Train error": loss.item(), "Test error":val_loss.item()})
                 
                 if val_loss.item() < hist:
-                    # model_filename = f'model_{experiment_name}.pth'
-                    # torch.save(model.state_dict(), model_filename)
-                    torch.save(model.state_dict(), 'model.pth')
+                    model_filename = f'model_{experiment_name}.pth'
+                    torch.save(model.state_dict(), model_filename)
+                    # torch.save(model.state_dict(), 'model.pth')
                     hist = val_loss.item()
         model.train()
         
- 
-    # 6. make the plotting function (using WandB)
     
     # Additional TODOs (to be done later):
-    # 0. use a simple baseline (2 layer MLP with 512 hidden units) and compare the performance
+    # 0. use a simple baseline (2 layer MLP with 512 hidden units) and compare the performance 
     # 1. figure out a way to compare two models (by the quality of predicted trajectories)
     #  - Given a state, and an action, predict the next state. Now, use this predicted state as an input to the model again, and predict the next state given the action that was taken by the policy. Do it for 10 length trajectory and compare the two trajectories.
     # 2. need to check whether channel wise actions are enough
@@ -346,30 +339,18 @@ def main(args):
 
 import argparse
 if __name__ == '__main__':
-    # args = ArgStorage({
-    #     'learning_rate' : 1e-4,
-    #     'weight_decay' : 1e-5,
-    #     'n_iters' : 1000,
-    #     'history' : 5,
-    #     'batch_size' : 1024,
-    #     'modes' : 9,
-    #     'width' : 64,
-    #     'seed' : 2023,
-    #     'gpu_id' : 0,
-    # })
-    
     parser = argparse.ArgumentParser()
-    parser.add_argument('--learning_rate', type=float, default=1e-4) # TODO: what is the best learning rate
+    parser.add_argument('--learning_rate', type=float, default=0.001) # TODO: what is the best learning rate
     parser.add_argument('--weight_decay', type=float, default=1e-5)
-    parser.add_argument('--n_iters', type=int, default=1000) # TODO: where to stop
+    parser.add_argument('--n_iters', type=int, default=20000) # TODO: where to stop
     parser.add_argument('--history', type=int, default=5)
     parser.add_argument('--batch_size', type=int, default=4096)
     parser.add_argument('--modes', type=int, default=9)
-    parser.add_argument('--width', type=int, default=64)
+    parser.add_argument('--width', type=int, default=512)
     parser.add_argument('--seed', type=int, default=2023)
     parser.add_argument('--gpu_id', type=int, default=0)
     parser.add_argument('--loss', choices=['MSE', 'SmoothL1'], default='SmoothL1')
-    parser.add_argument('--model', choices=['baseline', 'FNO1d', 'dynamic'])
+    parser.add_argument('--model', choices=['baseline', 'FNO1d', 'dynamic'], default='dynamic')
 
     args = parser.parse_args()
 
@@ -380,6 +361,10 @@ if __name__ == '__main__':
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
+    
+    # model_filename1 = 'Projects/RL/saved_models/model_Delta-halfcheetah_lr_0.0003_batch_4096.pth'
+    # model = Baseline1  
+    # model1 = load_model(model, model_filename1)
     
     main(args)
 
