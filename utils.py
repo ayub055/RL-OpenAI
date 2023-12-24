@@ -175,3 +175,6 @@ class EnsembleModel:
         ensemble_state_dicts = [model.state_dict() for model in self.models]
         torch.save(ensemble_state_dicts, save_path)
         print(f"Ensemble model saved to: {save_path}")
+
+def check():
+    print('Ayub')
