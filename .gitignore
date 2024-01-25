@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 sac/envs/__pycache__/
 sac/mbrl2/__pycache__/
+sac/runs/
 # C extensions
 *.so
 
