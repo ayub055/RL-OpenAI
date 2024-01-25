@@ -3,8 +3,7 @@ import torch
 import gym
 import d4rl
 from prettytable import PrettyTable
-
-
+import torch.nn as nn
 
 def get_selected_idx(data_loader, traj_len):
     idxs = data_loader.valid_indices

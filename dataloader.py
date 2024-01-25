@@ -137,15 +137,18 @@ class SpectralConv1d_fast(nn.Module):
     def forward(self, x):
         batchsize = x.shape[0]
         #Compute Fourier coeffcients up to factor of e^(- something constant)
+        print("Input to conv0: ", x.shape)
         x_ft = torch.fft.rfft(x)
-
         # Multiply relevant Fourier modes
+        print("x_ft : ", x_ft.shape)
         out_ft = torch.zeros(batchsize, self.out_channels, x.size(-1)//2 + 1, dtype=torch.cfloat, device=x.device)
+        
         out_ft[:, :, :self.modes] =\
             self.compl_mul1d(x_ft[:, :, :self.modes], self.weights1)
-
+        print("out_ft : ", out_ft.shape)
         #Return to physical space
         x = torch.fft.irfft(out_ft, n=x.size(-1))
+        print("fucnc return : ", x.shape)
         return x
 
 
@@ -213,18 +216,17 @@ class FNO1d(nn.Module):
 
     def forward(self, x, a): # x is state, a is action
         grid = self.get_grid(x.shape, x.device)
-        
         # x = x.to(self.device)
         # a = a.to(self.device)
-        x = torch.cat((x, grid), dim=-1)  # 32 x 17 x (10+1)
-        # print(x.shape)
-        x = self.fc0(x)  # 32 x 17 x 20
-        # print(x.shape)
-        
-        x = x.permute(0, 2, 1)  # 32 x 20 x 17
+        x = torch.cat((x, grid), dim=-1)  # ---> batch x 17 x (5+1)
+        print(x.shape)
+        x = self.fc0(x)  # ---> batch x 17 x 256
+        x = x.permute(0, 2, 1)  # ---> batch x 256 x 17
         # x = F.pad(x, [0,self.padding, 0,self.padding]) # pad the domain if input is non-periodic
-
-        x1 = self.conv0(x)  # 32 x 20 x 17
+        print("After permute : ", x.shape)
+        x1 = self.conv0(x)  # batch x 256 x 17
+        print("x1:", x1.shape)
+        import sys; sys.exit()
         x2 = self.w0(x, a)  # 32 x 20 x 17
         x = x1 + x2
         x = F.gelu(x)  # 32 x 20 x 17
@@ -280,9 +282,9 @@ def main(args):
 
     # Generate experiment name based on learning rate and loss function
     
-    experiment_name = f"FNO-halfcheetah_lr_{args.learning_rate}_width_{args.width}_NOBN_NO_STATE_modes_{args.modes}"
-    wandb.init(project="mbrl-nfo", group ="State-INDEPENDENT-No-BN", name=experiment_name)
-    wandb.config.update(args)
+    # experiment_name = f"FNO-halfcheetah_lr_{args.learning_rate}_width_{args.width}_NOBN_NO_STATE_modes_{args.modes}"
+    # wandb.init(project="mbrl-nfo", group ="State-INDEPENDENT-No-BN", name=experiment_name)
+    # wandb.config.update(args)
     
     env = gym.make('halfcheetah-medium-v2')
     dataset = env.get_dataset()
@@ -294,6 +296,8 @@ def main(args):
     terminals = dataset['terminals']
     timeouts = dataset['timeouts']
     terminals = np.logical_or(terminals, timeouts)
+    
+    print(observations.shape)
 
     # train_observations, train_actions, train_rewards, train_next_observations = data_loader.get_data()
     split = int(len(rewards) * 0.8)
@@ -377,6 +381,7 @@ def main(args):
         X, y = X.to(device), y.to(device)
         y_hat = model(X, ac)
         
+        import sys; sys.exit()
         loss = loss_fn(y_hat, y)
         
         optimizer.zero_grad()

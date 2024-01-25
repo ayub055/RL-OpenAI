@@ -2,11 +2,14 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+sac/envs/__pycache__/
+sac/mbrl2/__pycache__/
 # C extensions
 *.so
 
 wandb/
+sac/mbrl2/models/
+sac/mbrl2/wandb/
 # Distribution / packaging
 .Python
 build/

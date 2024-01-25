@@ -280,8 +280,8 @@ def main(args):
 
     # Generate experiment name based on learning rate and loss function
     
-    experiment_name = f"FNO-halfcheetah_lr_{args.learning_rate}_width_{args.width}_NOBN_state_modes_{args.modes}"
-    wandb.init(project="mbrl-nfo", group="State-dependent-No-BN", name=experiment_name)
+    experiment_name = f"FNO-HALFCHEETAH_lr_{args.learning_rate}_width_{args.width}_modes_{args.modes}"
+    wandb.init(project="mbrl-nfo", group="MOREL", name=experiment_name)
     wandb.config.update(args)
     
     env = gym.make('halfcheetah-medium-v2')
