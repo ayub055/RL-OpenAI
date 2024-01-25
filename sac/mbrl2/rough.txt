@@ -1,0 +1,17 @@
+# obs, acs, next_obs, rewards = data
+# obs = torch.from_numpy(obs).float()
+# acs = torch.from_numpy(acs).float()
+# next_obs = torch.from_numpy(next_obs).float()
+# rewards = torch.from_numpy(rewards).float()
+# diff = torch.from_numpy(np.zeros(obs.shape[0]))
+# for i in range(args.ensemble_size):
+#     model = models[i]
+#     model.load_state_dict(torch.load(f'./models/model_{i}.pt'))    
+# for i in range(args.ensemble_size):
+#     for j in range(i+1, args.ensemble_size):
+#         model1_out, _ = models[i](obs, acs)
+#         model2_out, _ = models[j](obs, acs)
+#         diff2 = (torch.abs(model1_out - model2_out) ** 2).mean(dim=-1)
+#         diff = torch.max(diff, diff2)
+# print(diff.mean().item(), diff.std().item(), diff.max().item(), diff.min().item(), np.percentile(diff.detach().numpy(), 90), np.percentile(diff.detach().numpy(), 10))
+# 0.6339 0.3335 3.1053 0.0644 1.0588 0.2856
